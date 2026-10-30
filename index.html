@@ -1,0 +1,133 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1">
+<title>ChaPanda TSQ | Stock Management</title>
+<style>
+:root{font-family:Inter,system-ui,-apple-system,Segoe UI,sans-serif;color:#1f2937;background:#f5f6f8}
+*{box-sizing:border-box}body{margin:0}.wrap{max-width:1180px;margin:auto;padding:22px}
+header{display:flex;align-items:center;justify-content:space-between;gap:12px;margin-bottom:20px}
+h1{font-size:23px;margin:0} .muted{color:#667085;font-size:13px}
+.panel{background:white;border:1px solid #e5e7eb;border-radius:14px;padding:18px;margin:14px 0;box-shadow:0 2px 8px #1018280a}
+.row{display:flex;gap:12px;align-items:end;flex-wrap:wrap}.field{display:flex;flex-direction:column;gap:6px;min-width:170px;flex:1}
+label{font-size:12px;color:#475467;font-weight:650}input{padding:10px 11px;border:1px solid #d0d5dd;border-radius:9px;font:inherit;min-width:0}
+button{border:0;border-radius:9px;padding:10px 14px;background:#176b4d;color:white;font-weight:650;cursor:pointer}button.secondary{background:#eef2f6;color:#344054}button:disabled{opacity:.5;cursor:not-allowed}
+#app{display:none}.table-wrap{overflow:auto}table{border-collapse:collapse;width:100%;min-width:850px}th,td{text-align:left;padding:10px 9px;border-bottom:1px solid #eaecf0;font-size:13px}th{background:#f9fafb;color:#475467;position:sticky;top:0}td input{width:92px;padding:8px}td.num{text-align:right;font-variant-numeric:tabular-nums}.status{padding:9px 12px;border-radius:9px;background:#f2f4f7;font-size:13px;margin:12px 0}.danger{color:#b42318}.pill{font-size:12px;padding:5px 8px;background:#ecfdf3;color:#027a48;border-radius:20px}
+.login{max-width:420px;margin:8vh auto}.right{display:flex;align-items:center;gap:10px}.small{font-size:12px}.empty{text-align:center;padding:25px;color:#667085}
+@media(max-width:600px){.wrap{padding:14px}header{align-items:flex-start;flex-direction:column}h1{font-size:20px}.panel{padding:14px}}
+</style>
+<script src="https://cdn.jsdelivr.net/npm/@supabase/supabase-js@2"></script>
+</head>
+<body>
+<div class="wrap">
+<header><div><h1>ChaPanda TSQ Stock Management</h1><div class="muted">Shared daily inventory • Live updates</div></div><div class="right"><span id="userLabel" class="muted"></span><button id="logout" class="secondary" style="display:none">Log out</button></div></header>
+<section id="loginPanel" class="panel login">
+<h2 style="margin-top:0">Staff login</h2>
+<p class="muted">Use your individual staff account.</p>
+<div class="field"><label>Email</label><input id="email" type="email" autocomplete="username" placeholder="staff@example.com"></div>
+<div class="field" style="margin-top:12px"><label>Password</label><input id="password" type="password" autocomplete="current-password"></div>
+<button id="loginBtn" style="width:100%;margin-top:16px">Log in</button>
+<div id="loginMsg" class="status" aria-live="polite">Connect Supabase first using the setup guide.</div>
+</section>
+<main id="app">
+<section class="panel">
+<div class="row">
+<div class="field"><label for="stockDate">Stock date</label><input id="stockDate" type="date"></div>
+<div class="field"><label>Signed-in staff</label><div id="staffName" style="padding:10px 0;font-weight:650">—</div></div>
+<div><button id="refreshBtn" class="secondary">Refresh</button></div>
+</div>
+<div id="status" class="status">Loading stock records…</div>
+<p class="muted small">Edit Stock Balance, Stock in and Stock out. Stock total and Stock usage are calculated automatically.</p>
+</section>
+<section class="panel">
+<div class="table-wrap">
+<table><thead><tr><th>No.</th><th>Item Description</th><th>Stock Balance</th><th>Stock in</th><th>Stock out</th><th>Stock total</th><th>Stock usage</th></tr></thead>
+<tbody id="stockRows"><tr><td colspan="7" class="empty">No items loaded yet.</td></tr></tbody></table>
+</div>
+</section>
+<section class="panel"><h3 style="margin-top:0">Recent activity</h3><div id="activity" class="muted">Activity log will appear here.</div></section>
+</main>
+</div>
+<script>
+const SUPABASE_URL = "PASTE_SUPABASE_PROJECT_URL";
+const SUPABASE_ANON_KEY = "PASTE_SUPABASE_ANON_KEY";
+let sb = null, currentUser = null, items = [], entries = {}, channel = null;
+const $ = id => document.getElementById(id);
+const today = new Date(); const localDate = new Date(today.getTime()-today.getTimezoneOffset()*60000).toISOString().slice(0,10);
+$("stockDate").value = localDate;
+function configured(){return SUPABASE_URL.startsWith("https://") && !SUPABASE_URL.includes("PASTE_") && !SUPABASE_ANON_KEY.includes("PASTE_")}
+function msg(s){$("status").textContent=s}
+function n(v){const x=Number(v);return Number.isFinite(x)?x:0}
+function fmt(v){return Number(v||0).toLocaleString("en-MY",{maximumFractionDigits:2})}
+async function start(){
+ if(!configured()){ $("loginMsg").textContent="Setup required: follow README, then add Supabase URL and anon key in index.html."; return; }
+ sb=window.supabase.createClient(SUPABASE_URL,SUPABASE_ANON_KEY,{auth:{persistSession:true,autoRefreshToken:true}});
+ const {data:{session}}=await sb.auth.getSession();
+ if(session) await showApp(session.user);
+}
+async function login(){
+ if(!configured()){ $("loginMsg").textContent="Supabase is not configured yet. Follow README.md."; return; }
+ $("loginBtn").disabled=true; $("loginMsg").textContent="Signing in…";
+ const {data,error}=await sb.auth.signInWithPassword({email:$("email").value.trim(),password:$("password").value});
+ $("loginBtn").disabled=false;
+ if(error){$("loginMsg").textContent=error.message;return}
+ await showApp(data.user);
+}
+async function showApp(user){
+ currentUser=user; $("loginPanel").style.display="none"; $("app").style.display="block"; $("logout").style.display="inline-block";
+ $("userLabel").textContent=user.email; $("staffName").textContent=user.email;
+ await loadItems(); await loadDay(); subscribeLive();
+}
+async function loadItems(){
+ const {data,error}=await sb.from("inventory_items").select("id,item_name").eq("active",true).order("sort_order").order("item_name");
+ if(error){msg("Could not load items: "+error.message);return}
+ items=data||[];
+}
+async function loadDay(){
+ msg("Loading "+$("stockDate").value+"…");
+ const {data,error}=await sb.from("daily_stock").select("*").eq("stock_date",$("stockDate").value);
+ if(error){msg("Could not load stock: "+error.message);return}
+ entries={}; (data||[]).forEach(e=>entries[e.item_id]=e);
+ render(); msg("Ready • updates are shared with signed-in staff.");
+ await loadActivity();
+}
+function render(){
+ const body=$("stockRows"); body.innerHTML="";
+ if(!items.length){body.innerHTML='<tr><td colspan="7" class="empty">No inventory items found. Import the item list using README instructions.</td></tr>';return}
+ items.forEach((it,i)=>{
+  const e=entries[it.id]||{stock_balance:0,stock_in:0,stock_out:0};
+  const total=n(e.stock_balance)+n(e.stock_in)-n(e.stock_out), usage=n(e.stock_out);
+  const tr=document.createElement("tr");
+  tr.innerHTML=`<td>${i+1}</td><td></td><td><input type="number" min="0" step="0.01" data-field="stock_balance" aria-label="Stock Balance"></td><td><input type="number" min="0" step="0.01" data-field="stock_in" aria-label="Stock in"></td><td><input type="number" min="0" step="0.01" data-field="stock_out" aria-label="Stock out"></td><td class="num">${fmt(total)}</td><td class="num">${fmt(usage)}</td>`;
+  tr.children[1].textContent=it.item_name;
+  ["stock_balance","stock_in","stock_out"].forEach((f,j)=>{const inp=tr.querySelectorAll("input")[j];inp.value=e[f]??0;inp.addEventListener("change",()=>save(it.id,tr));});
+  body.appendChild(tr);
+ });
+}
+async function save(itemId,tr){
+ const inputs=tr.querySelectorAll("input"); const payload={stock_date:$("stockDate").value,item_id:itemId,stock_balance:n(inputs[0].value),stock_in:n(inputs[1].value),stock_out:n(inputs[2].value),updated_by:currentUser.id};
+ const {error}=await sb.from("daily_stock").upsert(payload,{onConflict:"stock_date,item_id"});
+ if(error){msg("Save failed: "+error.message);return}
+ msg("Saved • shared live with the team.");
+ await loadDay();
+}
+async function loadActivity(){
+ const {data,error}=await sb.from("stock_activity").select("created_at,action,item_name,staff_email,stock_date").order("created_at",{ascending:false}).limit(12);
+ if(error){$("activity").textContent="Activity log unavailable.";return}
+ $("activity").innerHTML=(data||[]).map(a=>`<div style="padding:7px 0;border-bottom:1px solid #eee"><b>${esc(a.item_name||"Stock")}</b> — ${esc(a.action)} <span class="muted">by ${esc(a.staff_email||"staff")} • ${esc(a.stock_date||"")}</span></div>`).join("")||"No activity yet.";
+}
+function esc(s){return String(s??"").replace(/[&<>"']/g,c=>({"&":"&amp;","<":"&lt;",">":"&gt;",'"':"&quot;","'":"&#39;"}[c]))}
+function subscribeLive(){
+ if(channel)sb.removeChannel(channel);
+ channel=sb.channel("daily-stock-live").on("postgres_changes",{event:"*",schema:"public",table:"daily_stock"},payload=>{
+  if(payload.new?.stock_date===$("stockDate").value || payload.old?.stock_date===$("stockDate").value) loadDay();
+ }).subscribe();
+}
+$("loginBtn").addEventListener("click",login);
+$("password").addEventListener("keydown",e=>{if(e.key==="Enter")login()});
+$("logout").addEventListener("click",async()=>{if(sb)await sb.auth.signOut();location.reload()});
+$("stockDate").addEventListener("change",loadDay);
+$("refreshBtn").addEventListener("click",loadDay);
+start();
+</script>
+</body></html>
